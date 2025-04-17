@@ -1,0 +1,24 @@
+import os
+import sounddevice as sd
+import soundfile as sf
+
+# 저장 경로 설정
+negative_path = "C:\\AI\\negative"
+os.makedirs(negative_path, exist_ok=True)
+
+# 사용자에게 샘플 이름과 길이 입력 받기
+sample_name = input("녹음할 negative 샘플 이름을 입력하세요 (예: silence, other_voice 등): ")
+duration = int(input("녹음할 길이 (초)를 입력하세요 (예: 10): "))
+
+filename = os.path.join(negative_path, f"{sample_name}.wav")
+
+print(f"\n{sample_name} 녹음을 시작합니다. {duration}초 동안 아무 말도 하지 않거나, 다른 사람이 말하게 해보세요...")
+
+# 녹음 시작
+recording = sd.rec(int(16000 * duration), samplerate=16000, channels=1)
+sd.wait()
+
+# 파일 저장
+sf.write(filename, recording, 16000)
+print(f"\n 녹음 완료! 저장 위치: {filename}")
+
