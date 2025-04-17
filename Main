@@ -1,0 +1,167 @@
+import librosa
+import numpy as np
+import pyaudio
+import wave
+import os
+import tensorflow as tf
+from keras import layers, models
+import soundfile as sf
+import pickle
+import noisereduce as nr
+
+# WAV 파일에서 MFCC 특징 추출 함수
+def extract_mfcc_features(audio_file):
+    y, sr = sf.read(audio_file)
+    y, _ = librosa.effects.trim(y)
+    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
+    mfcc_mean = np.mean(mfcc.T, axis=0)
+    return mfcc_mean
+
+# RNN 모델 정의
+def create_rnn_model(input_shape):
+    model = models.Sequential()
+    model.add(layers.Input(shape=input_shape))
+    model.add(layers.SimpleRNN(64, activation='relu', return_sequences=False))
+    model.add(layers.Dense(32, activation='relu'))
+    model.add(layers.Dense(1, activation='sigmoid'))
+    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+    return model
+
+# 음성 녹음 함수 (WAV 저장 + 노이즈 제거)
+def record_audio(filename, duration=5):
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+
+    p = pyaudio.PyAudio()
+    format = pyaudio.paInt16
+    channels = 1
+    rate = 16000
+    frames_per_buffer = 1024
+
+    stream = p.open(format=format, channels=channels, rate=rate, input=True, frames_per_buffer=frames_per_buffer)
+    print("Recording...")
+    frames = [stream.read(frames_per_buffer) for _ in range(0, int(rate / frames_per_buffer * duration))]
+    print("Recording finished.")
+
+    stream.stop_stream()
+    stream.close()
+    p.terminate()
+
+    with wave.open(filename, 'wb') as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(p.get_sample_size(format))
+        wf.setframerate(rate)
+        wf.writeframes(b''.join(frames))
+
+    reduce_noise_from_audio(filename)
+
+def reduce_noise_from_audio(filename):
+    y, sr = librosa.load(filename, sr=16000)
+    reduced_noise = nr.reduce_noise(y=y, sr=sr)
+    sf.write(filename, reduced_noise, sr)
+    print(f"Noise reduction applied to {filename}.")
+
+# 사용자 모델 저장 함수
+def save_user_model(username, audio_file):
+    features = extract_mfcc_features(audio_file)
+    user_model = {'username': username, 'features': features}
+    model_folder = f"C:\\AI\\models\\{username}"
+    os.makedirs(model_folder, exist_ok=True)
+    model_path = os.path.join(model_folder, f"{username}_model.pkl")
+
+    with open(model_path, 'wb') as f:
+        pickle.dump(user_model, f)
+    print(f"{username}'s model has been saved at {model_path}.")
+
+# 로그인 인증 함수 (RNN 모델 사용)
+def authenticate_for_login_with_rnn():
+    count_file = f"C:\\AI\\login\\login_count.txt"
+    login_count = 0
+    if os.path.exists(count_file):
+        with open(count_file, 'r') as f:
+            login_count = int(f.read().strip())
+    login_count += 1
+    audio_file = f"C:\\AI\\login\\login{login_count}.wav"
+
+    print(f"{login_count}번째 로그인 시도 중입니다. 말씀하세요.")
+    record_audio(audio_file, duration=5)
+
+    with open(count_file, 'w') as f:
+        f.write(str(login_count))
+
+    username = authenticate_user_with_rnn(audio_file)
+    if username:
+        print(f"{username}님의 로그인 성공!")
+    else:
+        print("로그인 실패")
+
+# 사용자 인증 함수
+def authenticate_user_with_rnn(audio_file):
+    input_features = extract_mfcc_features(audio_file)
+    if input_features is None or np.all(input_features == 0):
+        print("유효한 음성 입력이 감지되지 않았습니다.")
+        return None
+
+    input_features = input_features.reshape((1, input_features.shape[0], 1))
+    model_folder = "C:\\AI\\models"
+    for user_folder in os.listdir(model_folder):
+        model_path = os.path.join(model_folder, user_folder, 'voice_authentication_model.h5')
+        if os.path.exists(model_path):
+            model = tf.keras.models.load_model(model_path)
+            prediction = model.predict(input_features)
+            print(f"{user_folder}의 예측 결과: {prediction}")
+            if prediction >= 0.92:
+                return user_folder
+    return None
+
+# 사용자 등록 함수
+def register_user(username):
+    folder = f"C:\\AI\\audio\\{username}"
+    os.makedirs(folder, exist_ok=True)
+
+    files = [os.path.join(folder, f"{username}_register_{i + 1}.flac") for i in range(3)]
+    print(f"{username}님의 음성을 3번 녹음합니다.")
+
+    features_list = []
+    for i, path in enumerate(files):
+        print(f"{i + 1}번째 녹음 시작")
+        record_audio(path, duration=5)  # .flac 파일로 녹음
+        mfcc = extract_mfcc_features(path)  # 수정된 함수 호출
+        features_list.append(mfcc)
+
+    # 🔽 부정(negative) 음성 추가
+    negative_files = ["C:\\AI\\negative\\noise.wav", "C:\\AI\\negative\\silence.wav", "C:\\AI\\negative\\other.wav"]
+    negative_features = [extract_mfcc_features(f) for f in negative_files]  # 수정된 함수 호출
+
+    # 전체 데이터 준비
+    X = np.array(features_list + negative_features)
+    X = X.reshape((X.shape[0], X.shape[1], 1))
+    y = np.array([1] * len(features_list) + [0] * len(negative_features))  # 1: 사용자, 0: 아닌 음성
+
+    model = create_rnn_model(input_shape=(X.shape[1], 1))
+    model.fit(X, y, epochs=15)
+
+    model_path = f"C:\\AI\\models\\{username}\\voice_authentication_model.h5"
+    os.makedirs(os.path.dirname(model_path), exist_ok=True)
+    model.save(model_path)
+    print(f"{username}님의 음성 모델이 저장되었습니다.")
+
+
+# 메인 실행
+if __name__ == "__main__":
+    while True:
+        print("\n메뉴를 선택하세요:")
+        print("1. 로그인")
+        print("2. 회원가입")
+        print("0. 종료")
+        choice = input("선택 (1/2/0): ")
+
+        if choice == '1':
+            authenticate_for_login_with_rnn()
+        elif choice == '2':
+            username = input("회원가입할 사용자 이름을 입력하세요: ")
+            register_user(username)
+        elif choice == '0':
+            print("프로그램을 종료합니다.")
+            break
+        else:
+            print("잘못된 선택입니다. 다시 시도해주세요.")
